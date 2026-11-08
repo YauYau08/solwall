@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SolWall — A Message Wall That Lives on Solana</title>
+<script src="https://unpkg.com/@solana/web3.js@1.98.0/lib/index.iife.min.js"></script>
+<style>
+  :root { --bg:#0b0e17; --card:#151a2c; --line:#26304f; --txt:#e8ecf8; --dim:#8b96b8; --acc:#9945ff; --acc2:#14f195; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--txt); font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; padding:24px 16px 60px; }
+  .wrap { max-width:680px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  header h1 { font-size:34px; letter-spacing:.5px; }
+  header h1 .grad { background:linear-gradient(90deg,var(--acc),var(--acc2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  header p { color:var(--dim); margin-top:8px; font-size:15px; line-height:1.5; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button { background:linear-gradient(90deg,var(--acc),#7b3fe4); color:#fff; border:none; border-radius:10px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  button.green { background:linear-gradient(90deg,#0ecb81,#14f195); color:#06281a; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .addr { font-family:ui-monospace,Menlo,monospace; font-size:12.5px; word-break:break-all; color:var(--acc2); }
+  .bal { font-size:13px; color:var(--dim); }
+  textarea { width:100%; background:#0d1120; border:1px solid var(--line); border-radius:10px; color:var(--txt); padding:12px; font-size:15px; min-height:74px; resize:vertical; }
+  .status { font-size:13.5px; min-height:20px; margin-top:10px; color:var(--dim); line-height:1.5; }
+  .status a { color:var(--acc2); }
+  .msg { border-top:1px solid var(--line); padding:12px 2px; }
+  .msg:first-of-type { border-top:none; }
+  .msg .text { font-size:15.5px; line-height:1.5; word-break:break-word; }
+  .msg .meta { font-size:12px; color:var(--dim); margin-top:5px; font-family:ui-monospace,Menlo,monospace; }
+  .msg .meta a { color:var(--dim); }
+  .empty { color:var(--dim); font-size:14px; text-align:center; padding:14px 0; }
+  footer { text-align:center; color:var(--dim); font-size:12.5px; margin-top:26px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Sol<span class="grad">Wall</span></h1>
+    <p>A public message wall where every message is a real transaction on the Solana blockchain (devnet).<br>
+    No server, no database — the chain itself is the wall.</p>
+  </header>
+
+  <div class="card">
+    <h2>1 · Your demo wallet</h2>
+    <div id="wallet-none">
+      <p style="color:var(--dim);font-size:14px;margin-bottom:12px;line-height:1.55">Create a throwaway wallet right in your browser (devnet only, no real funds), then claim free test SOL to post.</p>
+      <button id="btn-create">Create demo wallet</button>
+    </div>
+    <div id="wallet-info" style="display:none">
+      <div class="addr" id="wallet-addr"></div>
+      <div class="row" style="margin-top:12px">
+        <span class="bal" id="wallet-bal">Balance: …</span>
+        <button class="green" id="btn-airdrop">Airdrop 1 devnet SOL</button>
+        <button class="ghost" id="btn-forget">Forget wallet</button>
+      </div>
+    </div>
+    <div class="status" id="wallet-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>2 · Post a message on-chain</h2>
+    <textarea id="msg-input" maxlength="200" placeholder="Write a message… it will be stored on Solana forever (well, on devnet). Max 200 characters."></textarea>
+    <div class="row" style="margin-top:12px">
+      <button id="btn-post" disabled>Post to the wall</button>
+      <span class="bal" id="char-count">0 / 200</span>
+    </div>
+    <div class="status" id="post-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>3 · The wall (read live from the chain)</h2>
+    <div class="row" style="margin-bottom:6px">
+      <button class="ghost" id="btn-refresh">↻ Refresh wall</button>
+    </div>
+    <div id="wall"><div class="empty">Loading messages from Solana devnet…</div></div>
+  </div>
+
+  <footer>
+    Built during MLH Solana Hackathon (Nov 6–8, 2026) · Uses the Solana Memo Program on devnet · Messages are public and permanent on-chain<br>
+    Source: single-file app (index.html) · Stack: Solana Web3.js, vanilla HTML/JS
+  </footer>
+</div>
+
+<script>
+(function () {
+  const { Connection, Keypair, Transaction, TransactionInstruction, PublicKey, LAMPORTS_PER_SOL, clusterApiUrl } = solanaWeb3;
+  const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+  const TAG = 'SOLWALL|';
+  const LS_KEY = 'solwall_demo_secret';
+  const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
+
+  let keypair = null;
+
+  const $ = (id) => document.getElementById(id);
+  const walletStatus = $('wallet-status'), postStatus = $('post-status');
+
+  function explorerTx(sig) { return 'https://explorer.solana.com/tx/' + sig + '?cluster=devnet'; }
+  function shortAddr(a) { return a.slice(0, 4) + '…' + a.slice(-4); }
+
+  function loadWallet() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) { keypair = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw))); return true; }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  async function refreshWalletUI() {
+    if (!keypair) {
+      $('wallet-none').style.display = 'block';
+      $('wallet-info').style.display = 'none';
+      $('btn-post').disabled = true;
+      return;
+    }
+    $('wallet-none').style.display = 'none';
+    $('wallet-info').style.display = 'block';
+    $('wallet-addr').textContent = 'Wallet: ' + keypair.publicKey.toBase58();
+    $('btn-post').disabled = false;
+    try {
+      const bal = await connection.getBalance(keypair.publicKey);
+      $('wallet-bal').textContent = 'Balance: ' + (bal / LAMPORTS_PER_SOL).toFixed(4) + ' devnet SOL';
+    } catch (e) { $('wallet-bal').textContent = 'Balance: (could not load)'; }
+  }
+
+  $('btn-create').onclick = async () => {
+    keypair = Keypair.generate();
+    localStorage.setItem(LS_KEY, JSON.stringify(Array.from(keypair.secretKey)));
+    walletStatus.textContent = 'Demo wallet created. Now airdrop some devnet SOL so you can post.';
+    await refreshWalletUI();
+  };
+
+  $('btn-forget').onclick = async () => {
+    localStorage.removeItem(LS_KEY);
+    keypair = null;
+    walletStatus.textContent = 'Wallet forgotten. Create a new one anytime.';
+    await refreshWalletUI();
+  };
+
+  $('btn-airdrop').onclick = async () => {
+    if (!keypair) return;
+    walletStatus.textContent = 'Requesting airdrop from devnet faucet…';
+    try {
+      const sig = await connection.requestAirdrop(keypair.publicKey, LAMPORTS_PER_SOL);
+      await connection.confirmTransaction(sig, 'confirmed');
+      walletStatus.innerHTML = 'Airdrop received. <a href="' + explorerTx(sig) + '" target="_blank" rel="noopener">View transaction</a>';
+    } catch (e) {
+      walletStatus.textContent = 'Airdrop failed (devnet faucet is sometimes rate-limited). Wait a minute and try again.';
+    }
+    await refreshWalletUI();
+  };
+
+  $('msg-input').addEventListener('input', () => {
+    $('char-count').textContent = $('msg-input').value.length + ' / 200';
+  });
+
+  $('btn-post').onclick = async () => {
+    if (!keypair) return;
+    const text = $('msg-input').value.trim();
+    if (!text) { postStatus.textContent = 'Write something first.'; return; }
+    $('btn-post').disabled = true;
+    postStatus.textContent = 'Sending your message to Solana devnet…';
+    try {
+      const data = new TextEncoder().encode(TAG + text);
+      const ix = new TransactionInstruction({ keys: [], programId: MEMO_PROGRAM_ID, data });
+      const tx = new Transaction().add(ix);
+      tx.feePayer = keypair.publicKey;
+      const { blockhash } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.sign(keypair);
+      const sig = await connection.sendRawTransaction(tx.serialize());
+      await connection.confirmTransaction(sig, 'confirmed');
+      postStatus.innerHTML = 'Posted on-chain! <a href="' + explorerTx(sig) + '" target="_blank" rel="noopener">View on Solana Explorer</a>';
+      $('msg-input').value = '';
+      $('char-count').textContent = '0 / 200';
+      setTimeout(loadWall, 1500);
+    } catch (e) {
+      postStatus.textContent = 'Posting failed — most likely the wallet is out of devnet SOL. Airdrop 1 SOL and try again.';
+    }
+    $('btn-post').disabled = false;
+    await refreshWalletUI();
+  };
+
+  function decodeMemoText(tx) {
+    try {
+      const msg = tx.transaction.message;
+      const keys = msg.accountKeys.map(k => (k.pubkey ? k.pubkey.toBase58() : k.toBase58()));
+      for (const ix of msg.instructions) {
+        const prog = ix.programId ? ix.programId.toBase58() : keys[ix.programIdIndex];
+        if (prog === MEMO_PROGRAM_ID.toBase58()) {
+          let b64 = null;
+          if (ix.data) { // parsed form: memo data is exposed as the raw string
+            if (typeof ix.data === 'string' && ix.data.startsWith(TAG)) return ix.data.slice(TAG.length);
+            b64 = ix.data;
+          }
+          if (b64) {
+            const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            const s = new TextDecoder().decode(bytes);
+            if (s.startsWith(TAG)) return s.slice(TAG.length);
+          }
+        }
+      }
+    } catch (e) { /* skip malformed */ }
+    return null;
+  }
+
+  async function loadWall() {
+    const wall = $('wall');
+    wall.innerHTML = '<div class="empty">Loading messages from Solana devnet…</div>';
+    try {
+      const sigs = await connection.getSignaturesForAddress(MEMO_PROGRAM_ID, { limit: 40 });
+      const txs = [];
+      for (const s of sigs) {
+        if (txs.length >= 12) break;
+        try {
+          const tx = await connection.getParsedTransaction(s.signature, { maxSupportedTransactionVersion: 0 });
+          if (!tx) continue;
+          const text = decodeMemoText(tx);
+          if (text !== null) {
+            const signer = tx.transaction.message.accountKeys.find(k => k.signer);
+            txs.push({ text, sig: s.signature, when: tx.blockTime, from: signer ? signer.pubkey.toBase58() : '' });
+          }
+        } catch (e) { /* skip */ }
+      }
+      if (!txs.length) {
+        wall.innerHTML = '<div class="empty">No SolWall messages found in the latest on-chain activity yet — be the first to post!</div>';
+        return;
+      }
+      wall.innerHTML = txs.map(m =>
+        '<div class="msg"><div class="text"></div><div class="meta">' +
+        (m.when ? new Date(m.when * 1000).toLocaleString() : '') +
+        (m.from ? ' · by ' + shortAddr(m.from) : '') +
+        ' · <a href="' + explorerTx(m.sig) + '" target="_blank" rel="noopener">tx ↗</a></div></div>'
+      ).join('');
+      Array.from(wall.querySelectorAll('.msg .text')).forEach((el, i) => { el.textContent = txs[i].text; });
+    } catch (e) {
+      wall.innerHTML = '<div class="empty">Could not load the wall right now (devnet RPC busy). Hit Refresh to retry.</div>';
+    }
+  }
+
+  $('btn-refresh').onclick = loadWall;
+
+  loadWallet();
+  refreshWalletUI();
+  loadWall();
+})();
+</script>
+</body>
+</html>
